@@ -1,140 +1,157 @@
-# Pwned indexer & search engine
+# Pwned (Rebuild v1)
 
-Pwned is an indexer and search engine made to easily store and search leaked databases rows.
-The project is based on [Quickwit](https://quickwit.io/), a distributed search engine.
+CLI-first leak ingestion and search engine for personal cybersecurity research.
 
-## Disclaimer
+## Status
 
-This project is made for educational purpose only.
-We do not encourage the use of this project for illegal activities.
-We are not responsible for any misuse of this project.
+- Rebuild in progress.
+- Phase 0 specs are in `./specs`.
+- Phase 1 + Phase 2 scaffold is implemented:
+  - Go CLI entrypoint
+  - environment-based config (12-factor style)
+  - structured JSON logging
+  - streaming raw ingest to S3-compatible storage (MinIO)
+  - format adapters (`csv`, `txt`, `json`, `ndjson`)
+  - canonical normalization + chunked NDJSON outputs
+  - Quickwit indexing command from local ingestion manifests
+  - mapped search command with combinable filters
+  - local + remote ingestion manifest creation
 
-## Get Started
+## Important
 
-### Requirements
+- `./leaks` and `./bot` are preserved.
+- Legacy root files were backed up to `./old/legacy-20260320-162135`.
 
-- [Docker](https://docs.docker.com/get-docker/)
-- [Docker Compose](https://docs.docker.com/compose/install/)
+## Commands
 
-### How the project works
-
-The project is composed of 2 services:
-
-- [Minio](https://min.io/): A S3 compatible storage service
-- [Quickwit](https://quickwit.io/): A distributed search engine
-
-For the example, we have a file containing leaked databases rows.
-**It's important to note that the file must be a csv file with headers indicating search fields to map.**
-More info on the last section of this README.
-
-## Setup
-
-### Setup quickwit server
+Build:
 
 ```bash
-docker run --rm --network host --env "QW_S3_ENDPOINT=http://127.0.0.1:9000" --env "AWS_ACCESS_KEY_ID=minio" --env "AWS_SECRET_ACCESS_KEY=minio123" leofvo/pwned:1.0
+just build
 ```
 
-### Setup our infrastructure
+Show CLI help:
 
 ```bash
-cp .env.example .env
-make start
+just run-help
 ```
 
-### Create our index
-
-An index is a collection of documents. Each document is a json object.
-We need to create an index to be able to ingest data by specifying the fields we want to index.
+Start local MinIO + Quickwit:
 
 ```bash
-./quickwit index create --index-config ./leaks.yml
+just infra-start
 ```
 
-## Test example data
-
-### Ingest data
-
-As our file are csv, we need to setup a source to transform them into json.
-For this, you need to make sure the csv contains [headers that are supported by our application](#Search-fields).
+Import a single file:
 
 ```bash
-python -c "import csv, json, sys; [print(json.dumps(dict(row))) for row in csv.DictReader(sys.stdin)]" < ./example.txt > output.json
+./bin/pwned import --input ./some-dump.csv --source breach-2026
 ```
 
-Then we can ingest our data.
+Import a folder recursively:
 
 ```bash
-./quickwit index ingest --index leaks --input-path ./output.ndjson --force
+./bin/pwned import --input ./dumps --source multi-source --recursive
 ```
 
-We can also do this in one command.
+Import CSV without header row:
 
 ```bash
-./quickwit index ingest --index leaks --input-path <(python -c "import csv, json, sys; [print(json.dumps(dict(row))) for row in csv.DictReader(sys.stdin)]" < example.txt) --force
+./bin/pwned import \
+  --input ./dump-no-header.csv \
+  --source breach-2026 \
+  --format csv \
+  --csv-no-header \
+  --csv-headers email,password,firstname,lastname,phone,address
 ```
 
-### Search leaks
-
-We can now search our leaks.
-
-#### Using the CLI
+Index latest completed ingest:
 
 ```bash
-./quickwit index search --index leaks --query "phone_number:3622411259"
+./bin/pwned index
 ```
 
-#### Using the API
+Index all completed ingests for a source:
 
 ```bash
-curl -XPOST "http://localhost:7280/api/v1/leaks/search" -H 'Content-Type: application/json' -d '{
-    "query": "phone_number:3622411259"
-}'
+./bin/pwned index --source multi-source --all
 ```
 
-## Search fields available
+Search with one mapped field:
 
-This are the fields available for the search engine.
-They must be defined (caps-sensitive) in the csv headers of all ingested files.
-Checkout the example.txt file if you don't understand.
-
-```yml
-- name: source # Source of the leak
-  type: text
-- name: username # Username of the user
-  type: text
-- name: firstname # Firstname of the user
-  type: text
-- name: lastname # Lastname of the user
-  type: text
-- name: ip # IP of the user
-  type: text
-- name: email # Email of the user
-  type: text
-- name: phone # Phone number of the user
-  type: text
-- name: password # Password of the user
-  type: text
-- name: password_hash # Hash of the password of the user
-  type: text
-- name: gender # Gender of the user
-  type: text
-- name: adress # Adress of the user
-  type: text
-- name: birthday # Birthday of the user
-  type: text
-- name: country # Country of the user
-  type: text
-- name: city # City of the user
-  type: text
-- name: created # Timestamp of the account creation
-  type: text
-- name: updated # Timestamp of the account creation
-  type: text
-- name: marital_status # Marital status of the user
-  type: text
-- name: title # Job title of the user
-  type: text
-- name: linked_website # Website linked to the user account leak
-  type: text
+```bash
+./bin/pwned search --where firstname=john
 ```
+
+Search with combined mapped fields:
+
+```bash
+./bin/pwned search --where firstname=john --where lastname=doe --match all
+```
+
+Search and reveal sensitive fields:
+
+```bash
+./bin/pwned search --where email=john@doe.com --reveal-sensitive --json
+```
+
+Show canonical field mapping:
+
+```bash
+./bin/pwned mapping
+./bin/pwned mapping --json
+```
+
+## Environment
+
+Copy and adjust values from `.env.example`.
+
+Required keys:
+
+- `PWNED_S3_ENDPOINT`
+- `PWNED_S3_ACCESS_KEY`
+- `PWNED_S3_SECRET_KEY`
+- `PWNED_S3_BUCKET`
+- `PWNED_QUICKWIT_BASE_URL`
+- `PWNED_QUICKWIT_INDEX_ID`
+
+## CSV Without Headers
+
+If the file has no header line, pass:
+
+- `--csv-no-header`
+- `--csv-headers col1,col2,col3,...`
+
+The order in `--csv-headers` must match the order of values in each CSV row.
+
+## Canonical Mapping
+
+`import` normalizes input fields into canonical keys used for indexing.
+Use `./bin/pwned mapping` to print supported canonical keys and accepted aliases.
+
+Important canonical fields include:
+
+- `email`
+- `phone`
+- `username`
+- `firstname`
+- `lastname`
+- `address`
+- `password`
+- `password_hash`
+- `ip`
+
+## Meaning Of `index`
+
+`index` reads completed local ingest manifests from `.state/manifests`, then sends each normalized NDJSON chunk listed in those manifests to Quickwit ingest API.
+
+Behavior:
+
+- default: index the most recent completed ingest
+- `--ingest-id`: index one specific ingest
+- `--source --all`: index all completed ingests for a source
+- `--create-index=true`: create the Quickwit index from `leaks.yml` before ingesting chunks
+
+## Notes
+
+- Use only data you are legally authorized to process.

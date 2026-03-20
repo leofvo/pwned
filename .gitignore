@@ -3,3 +3,7 @@ leaks
 terraform
 .env
 quickwit
+bot/
+.state
+bin
+old/
