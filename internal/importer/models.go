@@ -11,15 +11,16 @@ import (
 )
 
 type Options struct {
-	InputPath   string
-	Source      string
-	Format      string
-	Tag         string
-	Recursive   bool
-	MaxMemory   string
-	CSVNoHeader bool
-	CSVHeaders  []string
-	RawStorage  string
+	InputPath      string
+	Source         string
+	Format         string
+	Tag            string
+	Recursive      bool
+	MaxMemory      string
+	CSVNoHeader    bool
+	CSVHeaders     []string
+	ResumeIngestID string
+	RawStorage     string
 }
 
 type Result struct {
@@ -41,6 +42,7 @@ type Manifest struct {
 	Format            string         `json:"format"`
 	MaxMemory         string         `json:"max_memory"`
 	StartedAt         time.Time      `json:"started_at"`
+	ResumedAt         *time.Time     `json:"resumed_at,omitempty"`
 	CompletedAt       time.Time      `json:"completed_at"`
 	Status            string         `json:"status"`
 	Files             []ManifestFile `json:"files"`
@@ -85,10 +87,11 @@ type inputFile struct {
 }
 
 func (o Options) validate() error {
-	if strings.TrimSpace(o.InputPath) == "" {
+	resumeMode := strings.TrimSpace(o.ResumeIngestID) != ""
+	if strings.TrimSpace(o.InputPath) == "" && !resumeMode {
 		return fmt.Errorf("input path is required")
 	}
-	if strings.TrimSpace(o.Source) == "" {
+	if strings.TrimSpace(o.Source) == "" && !resumeMode {
 		return fmt.Errorf("source is required")
 	}
 	if strings.TrimSpace(o.Format) == "" {

@@ -7,11 +7,13 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -55,21 +57,46 @@ func (s *Service) normalizeAndUploadFile(
 	file inputFile,
 	year string,
 	month string,
+	resumeEntry *ManifestFile,
 ) (normalizeResult, error) {
 	detectedFormat := detectFormat(file.relPath, opts.Format)
 
 	var (
-		part           int
-		chunks         []ManifestChunk
-		currentFile    *os.File
-		currentWriter  *bufio.Writer
-		currentPath    string
-		currentKey     string
-		currentBytes   int64
-		currentCount   int64
-		totalRecords   int64
-		lastCheckpoint string
+		part             int
+		chunks           []ManifestChunk
+		currentFile      *os.File
+		currentWriter    *bufio.Writer
+		currentPath      string
+		currentKey       string
+		currentBytes     int64
+		currentCount     int64
+		totalRecords     int64
+		lastCheckpoint   string
+		resumeCheckpoint int64
+		resumeReady      bool
 	)
+
+	if resumeEntry != nil {
+		part = len(resumeEntry.NormalizedChunks)
+		totalRecords = resumeEntry.RecordsProcessed
+		lastCheckpoint = strings.TrimSpace(resumeEntry.LastCheckpoint)
+		chunks = append(chunks, resumeEntry.NormalizedChunks...)
+		if checkpoint, ok := checkpointOrdinal(lastCheckpoint); ok {
+			resumeCheckpoint = checkpoint
+		} else if totalRecords > 0 || len(chunks) > 0 {
+			return normalizeResult{}, fmt.Errorf("cannot resume %q: missing or invalid checkpoint %q", file.relPath, lastCheckpoint)
+		}
+	}
+	resumeReady = resumeCheckpoint == 0
+
+	buildResult := func() normalizeResult {
+		return normalizeResult{
+			DetectedFormat:   detectedFormat,
+			RecordsProcessed: totalRecords,
+			LastCheckpoint:   lastCheckpoint,
+			Chunks:           chunks,
+		}
+	}
 
 	openChunk := func() error {
 		part++
@@ -105,7 +132,7 @@ func (s *Service) normalizeAndUploadFile(
 			return fmt.Errorf("close chunk file %q: %w", currentPath, err)
 		}
 
-		sizeBytes, err := uploadFileToObjectStorage(ctx, s.storage, currentPath, currentKey, "application/x-ndjson")
+		sizeBytes, err := s.uploadLocalFileWithRetry(ctx, currentPath, currentKey, "application/x-ndjson")
 		if err != nil {
 			return err
 		}
@@ -169,6 +196,15 @@ func (s *Service) normalizeAndUploadFile(
 
 	err := s.streamRecords(file.absPath, detectedFormat, opts, func(fields map[string]any, checkpoint string) error {
 		lastCheckpoint = checkpoint
+
+		if !resumeReady {
+			currentCheckpoint, ok := checkpointOrdinal(checkpoint)
+			if ok && currentCheckpoint <= resumeCheckpoint {
+				return nil
+			}
+			resumeReady = true
+		}
+
 		normalized, keep := normalizeRecord(opts.Source, file.relPath, ingestID, totalRecords+1, detectedFormat, fields)
 		if !keep {
 			return nil
@@ -176,20 +212,19 @@ func (s *Service) normalizeAndUploadFile(
 		return writeNormalized(normalized)
 	})
 	if err != nil {
-		_ = closeChunk()
-		return normalizeResult{}, err
+		closeErr := closeChunk()
+		result := buildResult()
+		if closeErr != nil {
+			return result, errors.Join(err, closeErr)
+		}
+		return result, err
 	}
 
 	if err := closeChunk(); err != nil {
-		return normalizeResult{}, err
+		return buildResult(), err
 	}
 
-	return normalizeResult{
-		DetectedFormat:   detectedFormat,
-		RecordsProcessed: totalRecords,
-		LastCheckpoint:   lastCheckpoint,
-		Chunks:           chunks,
-	}, nil
+	return buildResult(), nil
 }
 
 type emitFunc func(fields map[string]any, checkpoint string) error
@@ -639,22 +674,14 @@ func collectExtraFields(values map[string]string) map[string]string {
 	return extra
 }
 
-func uploadFileToObjectStorage(ctx context.Context, store interface {
-	PutObject(ctx context.Context, objectKey string, body io.Reader, size int64, contentType string) error
-}, localPath string, objectKey string, contentType string) (int64, error) {
-	info, err := os.Stat(localPath)
-	if err != nil {
-		return 0, fmt.Errorf("stat local file %q: %w", localPath, err)
+func checkpointOrdinal(value string) (int64, bool) {
+	parts := strings.SplitN(strings.TrimSpace(value), ":", 2)
+	if len(parts) != 2 {
+		return 0, false
 	}
-
-	file, err := os.Open(localPath)
-	if err != nil {
-		return 0, fmt.Errorf("open local file %q: %w", localPath, err)
+	parsed, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+	if err != nil || parsed < 0 {
+		return 0, false
 	}
-	defer file.Close()
-
-	if err := store.PutObject(ctx, objectKey, file, info.Size(), contentType); err != nil {
-		return 0, err
-	}
-	return info.Size(), nil
+	return parsed, true
 }
