@@ -15,6 +15,10 @@ CLI-first leak ingestion and search engine for personal cybersecurity research.
   - canonical normalization + chunked NDJSON outputs
   - Quickwit indexing command from local ingestion manifests
   - mapped search command with combinable filters
+  - provenance lookup by `record_id`
+  - export command (`json` / `csv`)
+  - ingest status command
+  - resumable import (`--resume-ingest-id`) with upload retry policy
   - local + remote ingestion manifest creation
 
 ## Important
@@ -65,6 +69,12 @@ Import CSV without header row:
   --csv-headers email,password,firstname,lastname,phone,address
 ```
 
+Resume a failed import:
+
+```bash
+./bin/pwned import --resume-ingest-id <ingest-id>
+```
+
 Index latest completed ingest:
 
 ```bash
@@ -95,6 +105,26 @@ Search and reveal sensitive fields:
 ./bin/pwned search --where email=john@doe.com --reveal-sensitive --json
 ```
 
+Lookup provenance by `record_id`:
+
+```bash
+./bin/pwned provenance --record-id <record-id> --json
+```
+
+Show ingest status:
+
+```bash
+./bin/pwned ingest status --all --json
+# alias
+./bin/pwned ingest-status --all --json
+```
+
+Export query results to CSV:
+
+```bash
+./bin/pwned export --where firstname=john --where lastname=doe --match all --format csv --output ./exports/john-doe.csv
+```
+
 Show canonical field mapping:
 
 ```bash
@@ -114,6 +144,9 @@ Required keys:
 - `PWNED_S3_BUCKET`
 - `PWNED_QUICKWIT_BASE_URL`
 - `PWNED_QUICKWIT_INDEX_ID`
+- `PWNED_UPLOAD_MAX_RETRIES`
+- `PWNED_UPLOAD_RETRY_BASE_DELAY`
+- `PWNED_UPLOAD_RETRY_MAX_DELAY`
 
 ## CSV Without Headers
 

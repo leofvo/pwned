@@ -10,10 +10,14 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/leofvo/pwned/internal/config"
+	"github.com/leofvo/pwned/internal/exporter"
 	"github.com/leofvo/pwned/internal/importer"
 	"github.com/leofvo/pwned/internal/indexer"
+	"github.com/leofvo/pwned/internal/ingeststatus"
+	"github.com/leofvo/pwned/internal/provenance"
 	searchsvc "github.com/leofvo/pwned/internal/search"
 )
 
@@ -47,6 +51,14 @@ func (a *App) Run(args []string) error {
 		return a.runIndex(args[1:])
 	case "search":
 		return a.runSearch(args[1:])
+	case "export":
+		return a.runExport(args[1:])
+	case "provenance":
+		return a.runProvenance(args[1:])
+	case "ingest":
+		return a.runIngest(args[1:])
+	case "ingest-status":
+		return a.runIngestStatus(args[1:])
 	case "mapping":
 		return a.runMapping(args[1:])
 	case "version":
@@ -71,15 +83,17 @@ func (a *App) runImport(args []string) error {
 	maxMemory := fs.String("max-memory", "256MiB", "Memory budget hint for ingestion pipeline")
 	csvNoHeader := fs.Bool("csv-no-header", false, "Treat CSV input as data-only rows without header line")
 	csvHeaders := fs.String("csv-headers", "", "Comma-separated CSV column names when --csv-no-header is set")
+	resumeIngestID := fs.String("resume-ingest-id", "", "Resume a failed import from an existing ingest id")
 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if strings.TrimSpace(*inputPath) == "" {
+	resumeMode := strings.TrimSpace(*resumeIngestID) != ""
+	if strings.TrimSpace(*inputPath) == "" && !resumeMode {
 		return errors.New("missing required --input")
 	}
-	if strings.TrimSpace(*source) == "" {
+	if strings.TrimSpace(*source) == "" && !resumeMode {
 		return errors.New("missing required --source")
 	}
 
@@ -92,15 +106,16 @@ func (a *App) runImport(args []string) error {
 	defer cancel()
 
 	result, err := svc.Import(ctx, importer.Options{
-		InputPath:   *inputPath,
-		Source:      *source,
-		Format:      *format,
-		Tag:         *tag,
-		Recursive:   *recursive,
-		MaxMemory:   *maxMemory,
-		CSVNoHeader: *csvNoHeader,
-		CSVHeaders:  parseCSVHeaders(*csvHeaders),
-		RawStorage:  "s3",
+		InputPath:      *inputPath,
+		Source:         *source,
+		Format:         *format,
+		Tag:            *tag,
+		Recursive:      *recursive,
+		MaxMemory:      *maxMemory,
+		CSVNoHeader:    *csvNoHeader,
+		CSVHeaders:     parseCSVHeaders(*csvHeaders),
+		ResumeIngestID: *resumeIngestID,
+		RawStorage:     "s3",
 	})
 	if err != nil {
 		return err
@@ -188,6 +203,137 @@ func (a *App) runSearch(args []string) error {
 	return writeSearchResult(a.stdout, result)
 }
 
+func (a *App) runExport(args []string) error {
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	fs.SetOutput(a.stderr)
+
+	rawQuery := fs.String("query", "", "Optional raw Quickwit query expression")
+	match := fs.String("match", "all", "How to combine filters: all|any")
+	limit := fs.Int("limit", 1000, "Maximum number of hits to export")
+	offset := fs.Int("offset", 0, "Pagination start offset")
+	revealSensitive := fs.Bool("reveal-sensitive", false, "Reveal sensitive fields in export output")
+	format := fs.String("format", "json", "Export format: json|csv")
+	outputPath := fs.String("output", "", "Required output file path")
+	createIndex := fs.Bool("create-index", false, "Create index from config before export")
+
+	var filters multiStringFlag
+	fs.Var(&filters, "where", "Mapped filter expression key=value (repeatable)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*outputPath) == "" {
+		return errors.New("missing required --output")
+	}
+
+	svc := exporter.NewService(a.cfg, a.logger)
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.CommandTimeout)
+	defer cancel()
+
+	result, err := svc.Export(ctx, exporter.Options{
+		RawQuery:        *rawQuery,
+		Filters:         []string(filters),
+		Match:           *match,
+		Limit:           *limit,
+		Offset:          *offset,
+		RevealSensitive: *revealSensitive,
+		Format:          *format,
+		OutputPath:      *outputPath,
+		CreateIndex:     *createIndex,
+	})
+	if err != nil {
+		return err
+	}
+
+	return writeJSON(a.stdout, result)
+}
+
+func (a *App) runProvenance(args []string) error {
+	fs := flag.NewFlagSet("provenance", flag.ContinueOnError)
+	fs.SetOutput(a.stderr)
+
+	recordID := fs.String("record-id", "", "Record id to inspect")
+	limit := fs.Int("limit", 20, "Maximum number of hits")
+	revealSensitive := fs.Bool("reveal-sensitive", false, "Reveal sensitive fields in output")
+	jsonOut := fs.Bool("json", false, "Print response as JSON")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*recordID) == "" {
+		return errors.New("missing required --record-id")
+	}
+
+	svc := provenance.NewService(a.cfg, a.logger)
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.CommandTimeout)
+	defer cancel()
+
+	result, err := svc.Lookup(ctx, provenance.Options{
+		RecordID:        *recordID,
+		Limit:           *limit,
+		RevealSensitive: *revealSensitive,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return writeJSON(a.stdout, result)
+	}
+	return writeProvenanceResult(a.stdout, result)
+}
+
+func (a *App) runIngest(args []string) error {
+	if len(args) == 0 {
+		return a.runIngestStatus(nil)
+	}
+
+	switch strings.TrimSpace(args[0]) {
+	case "status":
+		return a.runIngestStatus(args[1:])
+	default:
+		if strings.HasPrefix(args[0], "-") {
+			return a.runIngestStatus(args)
+		}
+		return fmt.Errorf("unknown ingest subcommand %q", args[0])
+	}
+}
+
+func (a *App) runIngestStatus(args []string) error {
+	fs := flag.NewFlagSet("ingest-status", flag.ContinueOnError)
+	fs.SetOutput(a.stderr)
+
+	ingestID := fs.String("ingest-id", "", "Show one ingest by id")
+	source := fs.String("source", "", "Filter by source")
+	all := fs.Bool("all", false, "Show all matching manifests")
+	jsonOut := fs.Bool("json", false, "Print response as JSON")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*ingestID) != "" && (strings.TrimSpace(*source) != "" || *all) {
+		return errors.New("--ingest-id cannot be combined with --source or --all")
+	}
+
+	svc := ingeststatus.NewService(a.cfg, a.logger)
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.CommandTimeout)
+	defer cancel()
+
+	result, err := svc.Status(ctx, ingeststatus.Options{
+		IngestID: *ingestID,
+		Source:   *source,
+		All:      *all,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return writeJSON(a.stdout, result)
+	}
+	return writeIngestStatusResult(a.stdout, result)
+}
+
 func (a *App) runMapping(args []string) error {
 	fs := flag.NewFlagSet("mapping", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
@@ -217,9 +363,13 @@ func (a *App) printUsage(baseErr error) error {
 	}
 
 	usage := `Usage:
-  pwned import --input <path> --source <name> [--format auto] [--tag <tag>] [--recursive] [--max-memory 256MiB] [--csv-no-header --csv-headers col1,col2,...]
+  pwned import --input <path> --source <name> [--format auto] [--tag <tag>] [--recursive] [--max-memory 256MiB] [--csv-no-header --csv-headers col1,col2,...] [--resume-ingest-id <id>]
   pwned index [--ingest-id <id>] [--source <name>] [--all] [--create-index=true]
   pwned search [--where key=value ...] [--match all|any] [--limit N] [--reveal-sensitive] [--json]
+  pwned export --output <path> [--format json|csv] [--where key=value ...] [--match all|any] [--limit N] [--reveal-sensitive]
+  pwned provenance --record-id <id> [--limit N] [--reveal-sensitive] [--json]
+  pwned ingest status [--ingest-id <id> | --source <name> [--all]] [--json]
+  pwned ingest-status [--ingest-id <id> | --source <name> [--all]] [--json]
   pwned mapping [--json]
   pwned version
   pwned help
@@ -274,6 +424,112 @@ func writeSearchResult(w io.Writer, result searchsvc.Result) error {
 			if _, err := fmt.Fprintf(w, "%s: %v\n", key, hit[key]); err != nil {
 				return err
 			}
+		}
+	}
+
+	return nil
+}
+
+func writeProvenanceResult(w io.Writer, result provenance.Result) error {
+	if _, err := fmt.Fprintf(w, "query: %s\n", result.Query); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "num_hits: %d\n", result.NumHits); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "returned_hits: %d\n", result.ReturnedHits); err != nil {
+		return err
+	}
+
+	for i, record := range result.Records {
+		if _, err := fmt.Fprintf(w, "\n[%d]\n", i+1); err != nil {
+			return err
+		}
+
+		keys := make([]string, 0, len(record.Hit))
+		for key := range record.Hit {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
+		for _, key := range keys {
+			if _, err := fmt.Fprintf(w, "%s: %v\n", key, record.Hit[key]); err != nil {
+				return err
+			}
+		}
+
+		if _, err := fmt.Fprintf(w, "manifest_found: %t\n", record.ManifestFound); err != nil {
+			return err
+		}
+		if record.ManifestPath != "" {
+			if _, err := fmt.Fprintf(w, "manifest_path: %s\n", record.ManifestPath); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(w, "file_found: %t\n", record.FileFound); err != nil {
+			return err
+		}
+		if record.FileProvenance != nil {
+			if _, err := fmt.Fprintf(w, "source_file_status: %s\n", record.FileProvenance.Status); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintf(w, "source_file_chunks: %d\n", len(record.FileProvenance.NormalizedChunks)); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func writeIngestStatusResult(w io.Writer, result ingeststatus.Result) error {
+	if len(result.Items) == 0 {
+		_, err := fmt.Fprintln(w, "no ingest manifests found")
+		return err
+	}
+
+	for i, item := range result.Items {
+		if i > 0 {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+
+		if _, err := fmt.Fprintf(w, "ingest_id: %s\n", item.IngestID); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "source: %s\n", item.Source); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "status: %s\n", item.Status); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "started_at: %s\n", item.StartedAt.Format(time.RFC3339)); err != nil {
+			return err
+		}
+		if item.ResumedAt != nil {
+			if _, err := fmt.Fprintf(w, "resumed_at: %s\n", item.ResumedAt.Format(time.RFC3339)); err != nil {
+				return err
+			}
+		}
+		if !item.CompletedAt.IsZero() {
+			if _, err := fmt.Fprintf(w, "completed_at: %s\n", item.CompletedAt.Format(time.RFC3339)); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(w, "files: total=%d completed=%d failed=%d running=%d\n", item.FilesTotal, item.FilesCompleted, item.FilesFailed, item.FilesRunning); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "totals: bytes=%d records=%d chunks=%d\n", item.TotalBytes, item.TotalRecords, item.TotalChunks); err != nil {
+			return err
+		}
+		if item.ErrorMessage != "" {
+			if _, err := fmt.Fprintf(w, "error: %s\n", item.ErrorMessage); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(w, "manifest_path: %s\n", item.ManifestPath); err != nil {
+			return err
 		}
 	}
 
