@@ -1,4 +1,3 @@
-version: '3.9'
 services:
   minio:
     image: quay.io/minio/minio
@@ -6,8 +5,8 @@ services:
       - '9000:9000'
       - '9001:9001'
     environment:
-      - MINIO_ROOT_USER=${S3_USER}
-      - MINIO_ROOT_PASSWORD=${S3_PASSWORD}
+      - MINIO_ROOT_USER=${PWNED_S3_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${PWNED_S3_SECRET_KEY}
     command: server /data --console-address ":9001"
     healthcheck:
       test: curl --fail http://localhost:9001/minio/health/live || exit 1
@@ -21,25 +20,25 @@ services:
       minio:
         condition: service_healthy
     environment:
-      - MINIO_SERVER=${MINIO_SERVER}
-      - BUCKET_NAME=${BUCKET_NAME}
-      - MINIO_ROOT_USER=${S3_USER}
-      - MINIO_ROOT_PASSWORD=${S3_PASSWORD}
+      - MINIO_SERVER=http://minio:9000/
+      - BUCKET_NAME=${PWNED_S3_BUCKET}
+      - MINIO_ROOT_USER=${PWNED_S3_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${PWNED_S3_SECRET_KEY}
     entrypoint:
       [
         'sh',
         '-c',
-        'mc alias set minio ${MINIO_SERVER} ${S3_USER} ${S3_PASSWORD} && mc mb minio/${BUCKET_NAME} || true',
+        'mc alias set minio $${MINIO_SERVER} $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} && mc mb minio/$${BUCKET_NAME} || true',
       ]
 
   quickwit:
     image: quickwit/quickwit
     environment:
-      - QW_S3_ENDPOINT=${MINIO_SERVER}
-      - AWS_ACCESS_KEY_ID=${S3_USER}
-      - AWS_SECRET_ACCESS_KEY=${S3_PASSWORD}
+      - QW_S3_ENDPOINT=http://minio:9000/
+      - AWS_ACCESS_KEY_ID=${PWNED_S3_ACCESS_KEY}
+      - AWS_SECRET_ACCESS_KEY=${PWNED_S3_SECRET_KEY}
       - QW_S3_FORCE_PATH_STYLE_ACCESS=true # For minIO
-      - AWS_REGION=us-east-1
+      - AWS_REGION=${PWNED_S3_REGION}
     ports:
       - '127.0.0.1:7280:7280'
     depends_on:

@@ -1,4 +1,4 @@
-phone_number,id,firstname,lastname,sex
+phone,id,firstname,lastname,gender
 3622300335,576213657812375,John,Doe,male
 3622411259,621637862137872,Juliette,Filoce,female
 3623376899,821388478992163,Daniel,Trusty,female
