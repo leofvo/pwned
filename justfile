@@ -1,8 +1,8 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
 binary := "bin/pwned"
-go_cache := "$(pwd)/.state/go-build"
-go_mod_cache := "$(pwd)/.state/go-mod"
+go_cache := "$(pwd)/.cache/go-build"
+go_mod_cache := "$(pwd)/.cache/go-mod"
 
 prepare:
     mkdir -p bin {{go_cache}} {{go_mod_cache}}
@@ -23,7 +23,7 @@ run-help: build
     ./{{binary}} help
 
 clean:
-    rm -rf bin .state
+    rm -rf bin .cache .state
 
 infra-start:
     docker compose up -d
