@@ -42,7 +42,7 @@ func NewService(cfg config.Config, logger *slog.Logger) *Service {
 	return &Service{
 		cfg:     cfg,
 		logger:  logger,
-		quickwt: quickwit.New(cfg.QuickwitBaseURL),
+		quickwt: quickwit.New(cfg.QuickwitBaseURL, cfg.QuickwitHTTPTimeout),
 	}
 }
 

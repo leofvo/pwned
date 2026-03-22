@@ -43,7 +43,7 @@ func NewService(cfg config.Config, logger *slog.Logger) *Service {
 	return &Service{
 		cfg:     cfg,
 		logger:  logger,
-		quickwt: quickwit.New(cfg.QuickwitBaseURL),
+		quickwt: quickwit.New(cfg.QuickwitBaseURL, cfg.QuickwitHTTPTimeout),
 	}
 }
 
@@ -111,11 +111,20 @@ func (s *Service) Lookup(ctx context.Context, opts Options) (Result, error) {
 }
 
 func asString(value any) string {
+	if value == nil {
+		return ""
+	}
 	switch typed := value.(type) {
 	case string:
 		return strings.TrimSpace(typed)
+	case []byte:
+		return strings.TrimSpace(string(typed))
 	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", typed))
+		rendered := strings.TrimSpace(fmt.Sprintf("%v", typed))
+		if rendered == "<nil>" {
+			return ""
+		}
+		return rendered
 	}
 }
 
