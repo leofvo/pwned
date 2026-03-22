@@ -100,9 +100,6 @@ func (o Options) validate() error {
 	if strings.TrimSpace(o.MaxMemory) == "" {
 		return fmt.Errorf("max memory is required")
 	}
-	if len(o.CSVHeaders) > 0 && !o.CSVNoHeader {
-		return fmt.Errorf("--csv-headers requires --csv-no-header")
-	}
 	if o.CSVNoHeader && len(o.CSVHeaders) == 0 {
 		return fmt.Errorf("--csv-no-header requires --csv-headers")
 	}

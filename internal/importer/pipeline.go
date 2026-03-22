@@ -254,6 +254,8 @@ func (s *Service) streamCSV(filePath string, opts Options, emit emitFunc) error 
 	reader := csv.NewReader(bufio.NewReaderSize(file, 128*1024))
 	reader.FieldsPerRecord = -1
 	reader.ReuseRecord = true
+	reader.LazyQuotes = true
+	reader.TrimLeadingSpace = true
 
 	line := int64(0)
 	var headers []string
@@ -269,8 +271,12 @@ func (s *Service) streamCSV(filePath string, opts Options, emit emitFunc) error 
 			return fmt.Errorf("read csv header %q: %w", filePath, err)
 		}
 		line = 1
-		headers = make([]string, len(headerRow))
-		for i, header := range headerRow {
+		effectiveHeaderRow := headerRow
+		if len(opts.CSVHeaders) > 0 {
+			effectiveHeaderRow = opts.CSVHeaders
+		}
+		headers = make([]string, len(effectiveHeaderRow))
+		for i, header := range effectiveHeaderRow {
 			headers[i] = canonicalizeKey(header)
 		}
 	}
@@ -522,6 +528,12 @@ func normalizeRecord(
 		assignCanonicalField(out, clean, mapping.Canonical, mapping.Aliases...)
 	}
 
+	if asString(out["address"]) == "" {
+		if combinedAddress := deriveAddress(clean, out); combinedAddress != "" {
+			out["address"] = combinedAddress
+		}
+	}
+
 	if value, ok := clean["raw_line"]; ok {
 		out["raw_line"] = value
 	}
@@ -564,7 +576,22 @@ func normalizeRecord(
 	}
 
 	keep := false
-	for _, field := range []string{"email", "phone", "username", "firstname", "lastname", "ip", "password", "password_hash", "raw_line"} {
+	for _, field := range []string{
+		"email",
+		"phone",
+		"username",
+		"firstname",
+		"lastname",
+		"address",
+		"city",
+		"country",
+		"gender",
+		"birthday",
+		"ip",
+		"password",
+		"password_hash",
+		"raw_line",
+	} {
 		if asString(out[field]) != "" {
 			keep = true
 			break
@@ -590,7 +617,9 @@ func normalizeFieldMap(fields map[string]any) map[string]string {
 }
 
 func canonicalizeKey(input string) string {
-	key := strings.ToLower(strings.TrimSpace(input))
+	key := strings.TrimSpace(input)
+	key = strings.TrimPrefix(key, "\uFEFF")
+	key = strings.ToLower(key)
 	key = strings.ReplaceAll(key, "-", "_")
 	key = strings.ReplaceAll(key, " ", "_")
 	key = strings.ReplaceAll(key, ".", "_")
@@ -598,11 +627,20 @@ func canonicalizeKey(input string) string {
 }
 
 func asString(value any) string {
+	if value == nil {
+		return ""
+	}
 	switch typed := value.(type) {
 	case string:
 		return strings.TrimSpace(typed)
+	case []byte:
+		return strings.TrimSpace(string(typed))
 	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", typed))
+		rendered := strings.TrimSpace(fmt.Sprintf("%v", typed))
+		if rendered == "<nil>" {
+			return ""
+		}
+		return rendered
 	}
 }
 
@@ -623,6 +661,56 @@ func normalizePhone(raw string) string {
 	value = strings.ReplaceAll(value, ")", "")
 	value = strings.ReplaceAll(value, ".", "")
 	return value
+}
+
+var addressPartKeys = []string{
+	"street",
+	"street_name",
+	"street_address",
+	"house_number",
+	"address_line1",
+	"address1",
+	"address_line2",
+	"address2",
+	"postal_code",
+	"postcode",
+	"zip_code",
+	"zipcode",
+	"zip",
+	"city",
+	"state",
+	"province",
+	"region",
+	"country",
+}
+
+func deriveAddress(clean map[string]string, out map[string]any) string {
+	parts := make([]string, 0, len(addressPartKeys))
+	seen := map[string]struct{}{}
+
+	add := func(value string) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return
+		}
+		dedupeKey := strings.ToLower(trimmed)
+		if _, ok := seen[dedupeKey]; ok {
+			return
+		}
+		seen[dedupeKey] = struct{}{}
+		parts = append(parts, trimmed)
+	}
+
+	for _, key := range addressPartKeys {
+		add(clean[key])
+	}
+	add(asString(out["city"]))
+	add(asString(out["country"]))
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ", ")
 }
 
 func firstRegexMatchFromValues(values map[string]string, pattern *regexp.Regexp) string {

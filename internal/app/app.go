@@ -82,7 +82,8 @@ func (a *App) runImport(args []string) error {
 	recursive := fs.Bool("recursive", false, "Enable recursive walk when --input is a directory")
 	maxMemory := fs.String("max-memory", "256MiB", "Memory budget hint for ingestion pipeline")
 	csvNoHeader := fs.Bool("csv-no-header", false, "Treat CSV input as data-only rows without header line")
-	csvHeaders := fs.String("csv-headers", "", "Comma-separated CSV column names when --csv-no-header is set")
+	csvHeaders := fs.String("csv-headers", "", "Comma-separated CSV column names; with header row this overrides bad headers, with --csv-no-header this defines headers")
+	csvHeader := fs.String("csv-header", "", "Alias of --csv-headers")
 	resumeIngestID := fs.String("resume-ingest-id", "", "Resume a failed import from an existing ingest id")
 
 	if err := fs.Parse(args); err != nil {
@@ -95,6 +96,14 @@ func (a *App) runImport(args []string) error {
 	}
 	if strings.TrimSpace(*source) == "" && !resumeMode {
 		return errors.New("missing required --source")
+	}
+	headersValue := strings.TrimSpace(*csvHeaders)
+	singularHeadersValue := strings.TrimSpace(*csvHeader)
+	if headersValue != "" && singularHeadersValue != "" && headersValue != singularHeadersValue {
+		return errors.New("use either --csv-headers or --csv-header with the same value")
+	}
+	if headersValue == "" {
+		headersValue = singularHeadersValue
 	}
 
 	svc, err := importer.NewService(a.cfg, a.logger)
@@ -113,7 +122,7 @@ func (a *App) runImport(args []string) error {
 		Recursive:      *recursive,
 		MaxMemory:      *maxMemory,
 		CSVNoHeader:    *csvNoHeader,
-		CSVHeaders:     parseCSVHeaders(*csvHeaders),
+		CSVHeaders:     parseCSVHeaders(headersValue),
 		ResumeIngestID: *resumeIngestID,
 		RawStorage:     "s3",
 	})
@@ -363,7 +372,7 @@ func (a *App) printUsage(baseErr error) error {
 	}
 
 	usage := `Usage:
-  pwned import --input <path> --source <name> [--format auto] [--tag <tag>] [--recursive] [--max-memory 256MiB] [--csv-no-header --csv-headers col1,col2,...] [--resume-ingest-id <id>]
+  pwned import --input <path> --source <name> [--format auto] [--tag <tag>] [--recursive] [--max-memory 256MiB] [--csv-headers col1,col2,...] [--csv-no-header] [--resume-ingest-id <id>]
   pwned index [--ingest-id <id>] [--source <name>] [--all] [--create-index=true]
   pwned search [--where key=value ...] [--match all|any] [--limit N] [--reveal-sensitive] [--json]
   pwned export --output <path> [--format json|csv] [--where key=value ...] [--match all|any] [--limit N] [--reveal-sensitive]
@@ -381,6 +390,7 @@ Environment:
   PWNED_S3_BUCKET
   PWNED_QUICKWIT_BASE_URL
   PWNED_QUICKWIT_INDEX_ID
+  PWNED_QUICKWIT_HTTP_TIMEOUT
 `
 
 	_, err := io.WriteString(a.stdout, usage)
