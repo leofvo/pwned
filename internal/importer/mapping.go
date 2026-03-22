@@ -19,7 +19,7 @@ var fieldMappings = []FieldMapping{
 	{Canonical: "password_hash", Aliases: []string{"password_hash", "passhash", "hash"}, Description: "Password hash"},
 	{Canonical: "ip", Aliases: []string{"ip", "ip_address"}, Description: "IP address"},
 	{Canonical: "gender", Aliases: []string{"gender", "sex"}, Description: "Gender"},
-	{Canonical: "address", Aliases: []string{"address", "addr"}, Description: "Address"},
+	{Canonical: "address", Aliases: []string{"address", "addr", "full_address", "street_address", "address_line1", "address1"}, Description: "Address"},
 	{Canonical: "birthday", Aliases: []string{"birthday", "birthdate", "date_of_birth", "dob"}, Description: "Birthday/date of birth"},
 	{Canonical: "country", Aliases: []string{"country"}, Description: "Country"},
 	{Canonical: "city", Aliases: []string{"city"}, Description: "City"},
