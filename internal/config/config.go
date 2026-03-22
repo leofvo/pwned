@@ -28,6 +28,7 @@ type Config struct {
 	QuickwitIndexConfig  string
 	QuickwitCommitMode   string
 	QuickwitAutoCreate   bool
+	QuickwitHTTPTimeout  time.Duration
 	UploadMaxRetries     int
 	UploadRetryBaseDelay time.Duration
 	UploadRetryMaxDelay  time.Duration
@@ -55,6 +56,7 @@ func LoadFromEnv() (Config, error) {
 		QuickwitIndexConfig:  strings.TrimSpace(getEnv("PWNED_QUICKWIT_INDEX_CONFIG", "leaks.yml")),
 		QuickwitCommitMode:   strings.TrimSpace(getEnv("PWNED_QUICKWIT_COMMIT_MODE", "wait_for")),
 		QuickwitAutoCreate:   mustParseBool("PWNED_QUICKWIT_AUTO_CREATE_INDEX", true),
+		QuickwitHTTPTimeout:  mustParseDuration("PWNED_QUICKWIT_HTTP_TIMEOUT", 5*time.Minute),
 		UploadMaxRetries:     mustParseInt("PWNED_UPLOAD_MAX_RETRIES", 3),
 		UploadRetryBaseDelay: mustParseDuration("PWNED_UPLOAD_RETRY_BASE_DELAY", 250*time.Millisecond),
 		UploadRetryMaxDelay:  mustParseDuration("PWNED_UPLOAD_RETRY_MAX_DELAY", 3*time.Second),
@@ -112,6 +114,9 @@ func (c Config) Validate() error {
 	case "auto", "wait_for", "force":
 	default:
 		return fmt.Errorf("PWNED_QUICKWIT_COMMIT_MODE must be one of auto|wait_for|force")
+	}
+	if c.QuickwitHTTPTimeout <= 0 {
+		return fmt.Errorf("PWNED_QUICKWIT_HTTP_TIMEOUT must be > 0")
 	}
 	if c.UploadMaxRetries < 0 {
 		return fmt.Errorf("PWNED_UPLOAD_MAX_RETRIES must be >= 0")
