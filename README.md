@@ -69,6 +69,16 @@ Import CSV without header row:
   --csv-headers email,password,firstname,lastname,phone,address
 ```
 
+Import CSV with existing header row but force your own mapping:
+
+```bash
+./bin/pwned import \
+  --input ./dump-with-bad-header.csv \
+  --source breach-2026 \
+  --format csv \
+  --csv-headers phone,id,firstname,lastname,gender,address
+```
+
 Resume a failed import:
 
 ```bash
@@ -144,9 +154,20 @@ Required keys:
 - `PWNED_S3_BUCKET`
 - `PWNED_QUICKWIT_BASE_URL`
 - `PWNED_QUICKWIT_INDEX_ID`
+- `PWNED_QUICKWIT_HTTP_TIMEOUT`
 - `PWNED_UPLOAD_MAX_RETRIES`
 - `PWNED_UPLOAD_RETRY_BASE_DELAY`
 - `PWNED_UPLOAD_RETRY_MAX_DELAY`
+
+## Local Directories
+
+- `.cache/`: local build caches (`go build`, `go test`, module downloads).
+- `.state/`: runtime ingestion state (manifests + normalized local chunks).
+
+Default runtime paths:
+
+- `PWNED_MANIFEST_LOCAL_DIR=.state/manifests`
+- `PWNED_NORMALIZED_LOCAL_DIR=.state/normalized`
 
 ## CSV Without Headers
 
@@ -156,6 +177,11 @@ If the file has no header line, pass:
 - `--csv-headers col1,col2,col3,...`
 
 The order in `--csv-headers` must match the order of values in each CSV row.
+
+If a file has a header row but names are wrong, pass only `--csv-headers ...` (without `--csv-no-header`).
+The importer will still skip the first line and use your provided names.
+
+`--csv-header` (singular) is accepted as an alias of `--csv-headers`.
 
 ## Canonical Mapping
 
@@ -174,6 +200,11 @@ Important canonical fields include:
 - `password_hash`
 - `ip`
 
+Address handling:
+
+- if `address` (or aliases like `street_address`, `address_line1`) exists, it is used directly
+- if not, importer tries to compose `address` from split fields (`street`, `postal_code`/`zip`, `city`, `state`, `country`, etc.)
+
 ## Meaning Of `index`
 
 `index` reads completed local ingest manifests from `.state/manifests`, then sends each normalized NDJSON chunk listed in those manifests to Quickwit ingest API.
@@ -184,6 +215,8 @@ Behavior:
 - `--ingest-id`: index one specific ingest
 - `--source --all`: index all completed ingests for a source
 - `--create-index=true`: create the Quickwit index from `leaks.yml` before ingesting chunks
+
+For large backfills, set `PWNED_QUICKWIT_COMMIT_MODE=auto` and increase `PWNED_QUICKWIT_HTTP_TIMEOUT` (for example `5m`).
 
 ## Notes
 
