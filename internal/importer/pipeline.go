@@ -58,6 +58,7 @@ func (s *Service) normalizeAndUploadFile(
 	year string,
 	month string,
 	resumeEntry *ManifestFile,
+	limits runtimeLimits,
 ) (normalizeResult, error) {
 	detectedFormat := detectFormat(file.relPath, opts.Format)
 
@@ -113,7 +114,7 @@ func (s *Service) normalizeAndUploadFile(
 		}
 
 		currentFile = handle
-		currentWriter = bufio.NewWriterSize(handle, 64*1024)
+		currentWriter = bufio.NewWriterSize(handle, limits.WriterBufferBytes)
 		currentBytes = 0
 		currentCount = 0
 		return nil
@@ -162,8 +163,8 @@ func (s *Service) normalizeAndUploadFile(
 		payload = append(payload, '\n')
 		payloadBytes := int64(len(payload))
 
-		if payloadBytes > s.cfg.ChunkMaxBytes {
-			return fmt.Errorf("single normalized record exceeds chunk max bytes (%d)", s.cfg.ChunkMaxBytes)
+		if payloadBytes > limits.ChunkMaxBytes {
+			return fmt.Errorf("single normalized record exceeds chunk max bytes (%d)", limits.ChunkMaxBytes)
 		}
 
 		if currentFile == nil {
@@ -172,8 +173,8 @@ func (s *Service) normalizeAndUploadFile(
 			}
 		}
 
-		wouldOverflowBytes := currentCount > 0 && (currentBytes+payloadBytes) > s.cfg.ChunkMaxBytes
-		wouldOverflowRecords := currentCount > 0 && int(currentCount) >= s.cfg.ChunkMaxRecords
+		wouldOverflowBytes := currentCount > 0 && (currentBytes+payloadBytes) > limits.ChunkMaxBytes
+		wouldOverflowRecords := currentCount > 0 && int(currentCount) >= limits.ChunkMaxRecords
 		if wouldOverflowBytes || wouldOverflowRecords {
 			if err := closeChunk(); err != nil {
 				return err
@@ -194,7 +195,7 @@ func (s *Service) normalizeAndUploadFile(
 		return nil
 	}
 
-	err := s.streamRecords(file.absPath, detectedFormat, opts, func(fields map[string]any, checkpoint string) error {
+	err := s.streamRecords(file.absPath, detectedFormat, opts, limits, func(fields map[string]any, checkpoint string) error {
 		lastCheckpoint = checkpoint
 
 		if !resumeReady {
@@ -229,29 +230,33 @@ func (s *Service) normalizeAndUploadFile(
 
 type emitFunc func(fields map[string]any, checkpoint string) error
 
-func (s *Service) streamRecords(filePath string, format string, opts Options, emit emitFunc) error {
+func (s *Service) streamRecords(filePath string, format string, opts Options, limits runtimeLimits, emit emitFunc) error {
 	switch format {
 	case "csv":
-		return s.streamCSV(filePath, opts, emit)
+		return s.streamCSV(filePath, opts, limits, emit)
 	case "json":
-		return s.streamJSON(filePath, emit)
+		return s.streamJSON(filePath, limits, emit)
 	case "ndjson":
-		return s.streamNDJSON(filePath, emit)
+		return s.streamNDJSON(filePath, limits, emit)
 	case "txt":
-		return s.streamTXT(filePath, emit)
+		return s.streamTXT(filePath, limits, emit)
 	default:
 		return fmt.Errorf("unsupported format %q", format)
 	}
 }
 
-func (s *Service) streamCSV(filePath string, opts Options, emit emitFunc) error {
+func (s *Service) streamCSV(filePath string, opts Options, limits runtimeLimits, emit emitFunc) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open csv file %q: %w", filePath, err)
 	}
 	defer file.Close()
 
-	reader := csv.NewReader(bufio.NewReaderSize(file, 128*1024))
+	readerBufferBytes := limits.WriterBufferBytes * 2
+	if readerBufferBytes < 64*1024 {
+		readerBufferBytes = 64 * 1024
+	}
+	reader := csv.NewReader(bufio.NewReaderSize(file, readerBufferBytes))
 	reader.FieldsPerRecord = -1
 	reader.ReuseRecord = true
 	reader.LazyQuotes = true
@@ -308,7 +313,7 @@ func (s *Service) streamCSV(filePath string, opts Options, emit emitFunc) error 
 	}
 }
 
-func (s *Service) streamNDJSON(filePath string, emit emitFunc) error {
+func (s *Service) streamNDJSON(filePath string, limits runtimeLimits, emit emitFunc) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open ndjson file %q: %w", filePath, err)
@@ -316,7 +321,7 @@ func (s *Service) streamNDJSON(filePath string, emit emitFunc) error {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), s.cfg.ParserMaxLineBytes)
+	scanner.Buffer(make([]byte, 64*1024), limits.ParserMaxLineBytes)
 
 	var line int64
 	for scanner.Scan() {
@@ -343,7 +348,7 @@ func (s *Service) streamNDJSON(filePath string, emit emitFunc) error {
 	return nil
 }
 
-func (s *Service) streamJSON(filePath string, emit emitFunc) error {
+func (s *Service) streamJSON(filePath string, _ runtimeLimits, emit emitFunc) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open json file %q: %w", filePath, err)
@@ -391,7 +396,7 @@ func (s *Service) streamJSON(filePath string, emit emitFunc) error {
 	}
 }
 
-func (s *Service) streamTXT(filePath string, emit emitFunc) error {
+func (s *Service) streamTXT(filePath string, limits runtimeLimits, emit emitFunc) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open txt file %q: %w", filePath, err)
@@ -399,7 +404,7 @@ func (s *Service) streamTXT(filePath string, emit emitFunc) error {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), s.cfg.ParserMaxLineBytes)
+	scanner.Buffer(make([]byte, 64*1024), limits.ParserMaxLineBytes)
 
 	var line int64
 	for scanner.Scan() {

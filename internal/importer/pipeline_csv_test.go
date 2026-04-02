@@ -28,9 +28,12 @@ func TestStreamCSVHeaderOverrideSkipsFirstLine(t *testing.T) {
 		fieldsList  []map[string]any
 		checkpoints []string
 	)
+	limits := runtimeLimits{
+		WriterBufferBytes: 8 * 1024,
+	}
 	err := svc.streamCSV(path, Options{
 		CSVHeaders: []string{"phone", "firstname"},
-	}, func(fields map[string]any, checkpoint string) error {
+	}, limits, func(fields map[string]any, checkpoint string) error {
 		fieldsList = append(fieldsList, fields)
 		checkpoints = append(checkpoints, checkpoint)
 		return nil
@@ -70,7 +73,7 @@ func TestStreamCSVAllowsLazyQuotes(t *testing.T) {
 	}
 
 	var fieldsList []map[string]any
-	err := svc.streamCSV(path, Options{}, func(fields map[string]any, _ string) error {
+	err := svc.streamCSV(path, Options{}, runtimeLimits{WriterBufferBytes: 8 * 1024}, func(fields map[string]any, _ string) error {
 		fieldsList = append(fieldsList, fields)
 		return nil
 	})

@@ -97,7 +97,7 @@ func (o Options) validate() error {
 	if strings.TrimSpace(o.Format) == "" {
 		return fmt.Errorf("format is required")
 	}
-	if strings.TrimSpace(o.MaxMemory) == "" {
+	if strings.TrimSpace(o.MaxMemory) == "" && !resumeMode {
 		return fmt.Errorf("max memory is required")
 	}
 	if o.CSVNoHeader && len(o.CSVHeaders) == 0 {

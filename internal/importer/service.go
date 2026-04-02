@@ -52,6 +52,10 @@ func (s *Service) Import(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	ingestID := manifest.IngestID
+	limits, err := deriveRuntimeLimits(manifest.MaxMemory, s.cfg)
+	if err != nil {
+		return Result{}, fmt.Errorf("resolve runtime limits from max memory %q: %w", manifest.MaxMemory, err)
+	}
 
 	recursive := opts.Recursive
 	if strings.TrimSpace(opts.ResumeIngestID) != "" {
@@ -75,6 +79,7 @@ func (s *Service) Import(ctx context.Context, opts Options) (Result, error) {
 	effectiveOpts := opts
 	effectiveOpts.Source = manifest.Source
 	effectiveOpts.Format = manifest.Format
+	effectiveOpts.MaxMemory = manifest.MaxMemory
 
 	existingByPath := mapManifestFilesByPath(manifest.Files)
 
@@ -119,7 +124,7 @@ func (s *Service) Import(ctx context.Context, opts Options) (Result, error) {
 			entry.SHA256 = sha256Sum
 		}
 
-		normalizedResult, normalizeErr := s.normalizeAndUploadFile(ctx, effectiveOpts, ingestID, file, year, month, resumeEntry)
+		normalizedResult, normalizeErr := s.normalizeAndUploadFile(ctx, effectiveOpts, ingestID, file, year, month, resumeEntry, limits)
 		if normalizeErr != nil {
 			entry.Status = "failed"
 			entry.DetectedFormat = normalizedResult.DetectedFormat
