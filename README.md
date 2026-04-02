@@ -26,6 +26,52 @@ CLI-first leak ingestion and search engine for personal cybersecurity research.
 - `./leaks` and `./bot` are preserved.
 - Legacy root files were backed up to `./old/legacy-20260320-162135`.
 
+## Installation
+
+### Option 1: Download prebuilt binaries from GitHub Releases
+
+New tags automatically trigger a release with these binaries:
+
+- `pwned-<tag>-linux-amd64`
+- `pwned-<tag>-linux-aarch64`
+- `pwned-<tag>-darwin-amd64`
+- `pwned-<tag>-darwin-aarch64`
+
+Install from a specific tag:
+
+```bash
+TAG=v0.1.0
+OS=linux      # linux or darwin
+ARCH=amd64    # amd64 or aarch64
+
+curl -fL "https://github.com/LeoFVO/pwned/releases/download/${TAG}/pwned-${TAG}-${OS}-${ARCH}" -o pwned
+chmod +x pwned
+sudo mv pwned /usr/local/bin/pwned
+pwned help
+```
+
+### Option 2: Install with Go
+
+Requires Go 1.23+.
+
+Install latest:
+
+```bash
+go install github.com/leofvo/pwned/cmd/pwned@latest
+```
+
+Install a specific version:
+
+```bash
+go install github.com/leofvo/pwned/cmd/pwned@v0.1.0
+```
+
+Ensure your Go bin directory is on `PATH`:
+
+```bash
+export PATH="$(go env GOPATH)/bin:$PATH"
+```
+
 ## Commands
 
 Build:
