@@ -2,7 +2,7 @@ qwdata
 leaks
 terraform
 .env
-quickwit
+/quickwit
 /bot/
 .state
 .cache

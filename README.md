@@ -1,33 +1,6 @@
-# Pwned (Rebuild v1)
+# Pwned
 
 CLI-first leak ingestion and search engine for personal cybersecurity research.
-
-## Status
-
-- Rebuild in progress.
-- Phase 0 specs are in `./specs`.
-- Phase 1 + Phase 2 scaffold is implemented:
-  - Go CLI entrypoint
-  - environment-based config (12-factor style)
-  - structured JSON logging
-  - streaming raw ingest to S3-compatible storage (MinIO)
-  - format adapters (`csv`, `txt`, `json`, `ndjson`)
-  - canonical normalization + chunked NDJSON outputs
-  - Quickwit indexing command from local ingestion manifests
-  - mapped search command with combinable filters
-  - provenance lookup by `record_id`
-  - export command (`json` / `csv`)
-  - ingest status command
-  - storage stats command (`storage stats`) with source/month grouping
-  - resumable import (`--resume-ingest-id`) with upload retry policy
-  - enforced memory budget handling from `--max-memory`
-  - append-only audit logging for command executions
-  - local + remote ingestion manifest creation
-
-## Important
-
-- `./leaks` and `./bot` are preserved.
-- Legacy root files were backed up to `./old/legacy-20260320-162135`.
 
 ## Installation
 
@@ -236,8 +209,6 @@ just bot-start
 just bot-status
 just bot-stop
 ```
-
-Legacy standalone bot notes remain in `./bot/README.md`.
 
 ## Environment
 

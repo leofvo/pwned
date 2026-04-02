@@ -3,9 +3,8 @@ name: CI
 on:
   pull_request:
   push:
-    tags-ignore:
-      - "*"
-      - "**"
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -13,6 +12,8 @@ permissions:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    env:
+      GOWORK: off
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,6 +23,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Verify root module context
+        run: |
+          set -euo pipefail
+          gomod="$(go env GOMOD)"
+          echo "GOMOD=${gomod}"
+          test "${gomod}" = "${GITHUB_WORKSPACE}/go.mod"
 
       - name: Check formatting
         run: |
