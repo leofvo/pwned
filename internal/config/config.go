@@ -11,6 +11,8 @@ import (
 type Config struct {
 	Env                  string
 	LogLevel             string
+	AuditEnabled         bool
+	AuditLogPath         string
 	S3Endpoint           string
 	S3AccessKey          string
 	S3SecretKey          string
@@ -39,6 +41,8 @@ func LoadFromEnv() (Config, error) {
 	cfg := Config{
 		Env:                  getEnv("PWNED_ENV", "dev"),
 		LogLevel:             strings.ToLower(getEnv("PWNED_LOG_LEVEL", "info")),
+		AuditEnabled:         mustParseBool("PWNED_AUDIT_ENABLED", true),
+		AuditLogPath:         strings.TrimSpace(getEnv("PWNED_AUDIT_LOG_PATH", ".state/audit/events.jsonl")),
 		S3Endpoint:           strings.TrimSpace(getEnv("PWNED_S3_ENDPOINT", "http://127.0.0.1:9000")),
 		S3AccessKey:          strings.TrimSpace(getEnv("PWNED_S3_ACCESS_KEY", "minio")),
 		S3SecretKey:          strings.TrimSpace(getEnv("PWNED_S3_SECRET_KEY", "minio123")),
@@ -73,6 +77,9 @@ func LoadFromEnv() (Config, error) {
 func (c Config) Validate() error {
 	if c.S3Endpoint == "" {
 		return fmt.Errorf("missing PWNED_S3_ENDPOINT")
+	}
+	if c.AuditEnabled && c.AuditLogPath == "" {
+		return fmt.Errorf("missing PWNED_AUDIT_LOG_PATH")
 	}
 	if c.S3AccessKey == "" {
 		return fmt.Errorf("missing PWNED_S3_ACCESS_KEY")

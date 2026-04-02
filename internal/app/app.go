@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/leofvo/pwned/internal/audit"
 	botsvc "github.com/leofvo/pwned/internal/bot"
 	"github.com/leofvo/pwned/internal/config"
 	"github.com/leofvo/pwned/internal/exporter"
@@ -23,23 +24,26 @@ import (
 	"github.com/leofvo/pwned/internal/ingeststatus"
 	"github.com/leofvo/pwned/internal/provenance"
 	searchsvc "github.com/leofvo/pwned/internal/search"
+	"github.com/leofvo/pwned/internal/storagestats"
 )
 
 const version = "0.1.0"
 
 type App struct {
-	cfg    config.Config
-	logger *slog.Logger
-	stdout io.Writer
-	stderr io.Writer
+	cfg     config.Config
+	logger  *slog.Logger
+	auditor *audit.Logger
+	stdout  io.Writer
+	stderr  io.Writer
 }
 
 func New(cfg config.Config, logger *slog.Logger, stdout io.Writer, stderr io.Writer) *App {
 	return &App{
-		cfg:    cfg,
-		logger: logger,
-		stdout: stdout,
-		stderr: stderr,
+		cfg:     cfg,
+		logger:  logger,
+		auditor: audit.New(cfg.AuditLogPath, cfg.AuditEnabled),
+		stdout:  stdout,
+		stderr:  stderr,
 	}
 }
 
@@ -63,6 +67,8 @@ func (a *App) Run(args []string) error {
 		return a.runIngest(args[1:])
 	case "ingest-status":
 		return a.runIngestStatus(args[1:])
+	case "storage":
+		return a.runStorage(args[1:])
 	case "mapping":
 		return a.runMapping(args[1:])
 	case "bot":
@@ -112,9 +118,28 @@ func (a *App) runImport(args []string) error {
 		headersValue = singularHeadersValue
 	}
 
+	startedAt := time.Now().UTC()
+	params := map[string]any{
+		"source":            strings.TrimSpace(*source),
+		"format":            strings.TrimSpace(*format),
+		"recursive":         *recursive,
+		"max_memory":        strings.TrimSpace(*maxMemory),
+		"resume_ingest_id":  strings.TrimSpace(*resumeIngestID),
+		"csv_no_header":     *csvNoHeader,
+		"csv_headers_count": len(parseCSVHeaders(headersValue)),
+	}
+	if !resumeMode {
+		params["input_path"] = strings.TrimSpace(*inputPath)
+	}
+	var commandErr error
+	defer func() {
+		a.recordCommandAudit("import", startedAt, params, commandErr, false)
+	}()
+
 	svc, err := importer.NewService(a.cfg, a.logger)
 	if err != nil {
-		return err
+		commandErr = err
+		return commandErr
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.CommandTimeout)
@@ -133,10 +158,15 @@ func (a *App) runImport(args []string) error {
 		RawStorage:     "s3",
 	})
 	if err != nil {
-		return err
+		commandErr = err
+		return commandErr
 	}
 
-	return writeJSON(a.stdout, result)
+	params["ingest_id"] = result.IngestID
+	params["records_processed"] = result.RecordsProcessed
+
+	commandErr = writeJSON(a.stdout, result)
+	return commandErr
 }
 
 func (a *App) runIndex(args []string) error {
@@ -157,6 +187,19 @@ func (a *App) runIndex(args []string) error {
 		a.logger.Warn("rebuild flag is currently a no-op in v1 scaffold")
 	}
 
+	startedAt := time.Now().UTC()
+	params := map[string]any{
+		"ingest_id":    strings.TrimSpace(*ingestID),
+		"source":       strings.TrimSpace(*source),
+		"all":          *all,
+		"create_index": *createIndex,
+		"rebuild":      *rebuild,
+	}
+	var commandErr error
+	defer func() {
+		a.recordCommandAudit("index", startedAt, params, commandErr, false)
+	}()
+
 	svc := indexer.NewService(a.cfg, a.logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.CommandTimeout)
@@ -169,10 +212,15 @@ func (a *App) runIndex(args []string) error {
 		CreateIndex: *createIndex,
 	})
 	if err != nil {
-		return err
+		commandErr = err
+		return commandErr
 	}
 
-	return writeJSON(a.stdout, result)
+	params["manifests_indexed"] = result.ManifestsIndexed
+	params["records_indexed"] = result.RecordsIndexed
+
+	commandErr = writeJSON(a.stdout, result)
+	return commandErr
 }
 
 func (a *App) runSearch(args []string) error {
@@ -194,6 +242,21 @@ func (a *App) runSearch(args []string) error {
 		return err
 	}
 
+	startedAt := time.Now().UTC()
+	params := map[string]any{
+		"query":            strings.TrimSpace(*rawQuery),
+		"match":            strings.TrimSpace(*match),
+		"limit":            *limit,
+		"offset":           *offset,
+		"create_index":     *createIndex,
+		"reveal_sensitive": *revealSensitive,
+		"filters_count":    len(filters),
+	}
+	var commandErr error
+	defer func() {
+		a.recordCommandAudit("search", startedAt, params, commandErr, *revealSensitive)
+	}()
+
 	svc := searchsvc.NewService(a.cfg, a.logger)
 	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.CommandTimeout)
 	defer cancel()
@@ -209,13 +272,18 @@ func (a *App) runSearch(args []string) error {
 		IndexConfigPath: a.cfg.QuickwitIndexConfig,
 	})
 	if err != nil {
-		return err
+		commandErr = err
+		return commandErr
 	}
+	params["num_hits"] = result.NumHits
+	params["returned_hits"] = result.ReturnedHits
 
 	if *jsonOut {
-		return writeJSON(a.stdout, result)
+		commandErr = writeJSON(a.stdout, result)
+		return commandErr
 	}
-	return writeSearchResult(a.stdout, result)
+	commandErr = writeSearchResult(a.stdout, result)
+	return commandErr
 }
 
 func (a *App) runExport(args []string) error {
@@ -241,6 +309,23 @@ func (a *App) runExport(args []string) error {
 		return errors.New("missing required --output")
 	}
 
+	startedAt := time.Now().UTC()
+	params := map[string]any{
+		"query":            strings.TrimSpace(*rawQuery),
+		"match":            strings.TrimSpace(*match),
+		"limit":            *limit,
+		"offset":           *offset,
+		"create_index":     *createIndex,
+		"reveal_sensitive": *revealSensitive,
+		"format":           strings.TrimSpace(*format),
+		"output_path":      strings.TrimSpace(*outputPath),
+		"filters_count":    len(filters),
+	}
+	var commandErr error
+	defer func() {
+		a.recordCommandAudit("export", startedAt, params, commandErr, *revealSensitive)
+	}()
+
 	svc := exporter.NewService(a.cfg, a.logger)
 	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.CommandTimeout)
 	defer cancel()
@@ -257,10 +342,13 @@ func (a *App) runExport(args []string) error {
 		CreateIndex:     *createIndex,
 	})
 	if err != nil {
-		return err
+		commandErr = err
+		return commandErr
 	}
+	params["exported_hits"] = result.ExportedHits
 
-	return writeJSON(a.stdout, result)
+	commandErr = writeJSON(a.stdout, result)
+	return commandErr
 }
 
 func (a *App) runProvenance(args []string) error {
@@ -279,6 +367,17 @@ func (a *App) runProvenance(args []string) error {
 		return errors.New("missing required --record-id")
 	}
 
+	startedAt := time.Now().UTC()
+	params := map[string]any{
+		"record_id":        strings.TrimSpace(*recordID),
+		"limit":            *limit,
+		"reveal_sensitive": *revealSensitive,
+	}
+	var commandErr error
+	defer func() {
+		a.recordCommandAudit("provenance", startedAt, params, commandErr, *revealSensitive)
+	}()
+
 	svc := provenance.NewService(a.cfg, a.logger)
 	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.CommandTimeout)
 	defer cancel()
@@ -289,13 +388,18 @@ func (a *App) runProvenance(args []string) error {
 		RevealSensitive: *revealSensitive,
 	})
 	if err != nil {
-		return err
+		commandErr = err
+		return commandErr
 	}
+	params["num_hits"] = result.NumHits
+	params["returned_hits"] = result.ReturnedHits
 
 	if *jsonOut {
-		return writeJSON(a.stdout, result)
+		commandErr = writeJSON(a.stdout, result)
+		return commandErr
 	}
-	return writeProvenanceResult(a.stdout, result)
+	commandErr = writeProvenanceResult(a.stdout, result)
+	return commandErr
 }
 
 func (a *App) runIngest(args []string) error {
@@ -330,6 +434,17 @@ func (a *App) runIngestStatus(args []string) error {
 		return errors.New("--ingest-id cannot be combined with --source or --all")
 	}
 
+	startedAt := time.Now().UTC()
+	params := map[string]any{
+		"ingest_id": strings.TrimSpace(*ingestID),
+		"source":    strings.TrimSpace(*source),
+		"all":       *all,
+	}
+	var commandErr error
+	defer func() {
+		a.recordCommandAudit("ingest.status", startedAt, params, commandErr, false)
+	}()
+
 	svc := ingeststatus.NewService(a.cfg, a.logger)
 	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.CommandTimeout)
 	defer cancel()
@@ -340,13 +455,104 @@ func (a *App) runIngestStatus(args []string) error {
 		All:      *all,
 	})
 	if err != nil {
+		commandErr = err
+		return commandErr
+	}
+	params["items"] = len(result.Items)
+
+	if *jsonOut {
+		commandErr = writeJSON(a.stdout, result)
+		return commandErr
+	}
+	commandErr = writeIngestStatusResult(a.stdout, result)
+	return commandErr
+}
+
+func (a *App) runStorage(args []string) error {
+	if len(args) == 0 {
+		return a.runStorageStats(nil)
+	}
+
+	switch strings.TrimSpace(args[0]) {
+	case "stats":
+		return a.runStorageStats(args[1:])
+	default:
+		if strings.HasPrefix(args[0], "-") {
+			return a.runStorageStats(args)
+		}
+		return fmt.Errorf("unknown storage subcommand %q", args[0])
+	}
+}
+
+func (a *App) runStorageStats(args []string) error {
+	fs := flag.NewFlagSet("storage stats", flag.ContinueOnError)
+	fs.SetOutput(a.stderr)
+
+	source := fs.String("source", "", "Filter by source")
+	jsonOut := fs.Bool("json", false, "Print response as JSON")
+
+	var groups multiStringFlag
+	fs.Var(&groups, "by", "Group stats by dimension: source|month (repeatable)")
+
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if *jsonOut {
-		return writeJSON(a.stdout, result)
+	bySource := false
+	byMonth := false
+	groupSet := make(map[string]struct{}, len(groups))
+	for _, raw := range groups {
+		group := strings.ToLower(strings.TrimSpace(raw))
+		switch group {
+		case "source":
+			bySource = true
+			groupSet[group] = struct{}{}
+		case "month":
+			byMonth = true
+			groupSet[group] = struct{}{}
+		default:
+			return fmt.Errorf("invalid --by value %q (allowed: source, month)", raw)
+		}
 	}
-	return writeIngestStatusResult(a.stdout, result)
+
+	sortedGroups := make([]string, 0, len(groupSet))
+	for key := range groupSet {
+		sortedGroups = append(sortedGroups, key)
+	}
+	sort.Strings(sortedGroups)
+
+	startedAt := time.Now().UTC()
+	params := map[string]any{
+		"source": strings.TrimSpace(*source),
+		"by":     sortedGroups,
+	}
+	var commandErr error
+	defer func() {
+		a.recordCommandAudit("storage.stats", startedAt, params, commandErr, false)
+	}()
+
+	svc := storagestats.NewService(a.cfg, a.logger)
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.CommandTimeout)
+	defer cancel()
+
+	result, err := svc.Stats(ctx, storagestats.Options{
+		Source:   *source,
+		BySource: bySource,
+		ByMonth:  byMonth,
+	})
+	if err != nil {
+		commandErr = err
+		return commandErr
+	}
+	params["ingests"] = result.Summary.Ingests
+	params["total_bytes"] = result.Summary.TotalBytes
+
+	if *jsonOut {
+		commandErr = writeJSON(a.stdout, result)
+		return commandErr
+	}
+	commandErr = writeStorageStatsResult(a.stdout, result)
+	return commandErr
 }
 
 func (a *App) runBot(args []string) error {
@@ -380,6 +586,18 @@ func (a *App) runBotStart(args []string) error {
 		return err
 	}
 
+	tokenProvided := strings.TrimSpace(*token) != ""
+	startedAt := time.Now().UTC()
+	params := map[string]any{
+		"platform":       strings.TrimSpace(*platform),
+		"token_provided": tokenProvided,
+		"leaks_glob":     strings.TrimSpace(*leaksGlob),
+	}
+	var commandErr error
+	defer func() {
+		a.recordCommandAudit("bot.start", startedAt, params, commandErr, tokenProvided)
+	}()
+
 	svc := botsvc.NewService(a.cfg, a.logger)
 	result, err := svc.Start(context.Background(), botsvc.StartOptions{
 		Platform:  *platform,
@@ -387,9 +605,11 @@ func (a *App) runBotStart(args []string) error {
 		LeaksGlob: *leaksGlob,
 	})
 	if err != nil {
-		return err
+		commandErr = err
+		return commandErr
 	}
-	return writeJSON(a.stdout, result)
+	commandErr = writeJSON(a.stdout, result)
+	return commandErr
 }
 
 func (a *App) runBotStatus(args []string) error {
@@ -402,14 +622,25 @@ func (a *App) runBotStatus(args []string) error {
 		return err
 	}
 
+	startedAt := time.Now().UTC()
+	params := map[string]any{
+		"platform": strings.TrimSpace(*platform),
+	}
+	var commandErr error
+	defer func() {
+		a.recordCommandAudit("bot.status", startedAt, params, commandErr, false)
+	}()
+
 	svc := botsvc.NewService(a.cfg, a.logger)
 	result, err := svc.Status(context.Background(), botsvc.StatusOptions{
 		Platform: *platform,
 	})
 	if err != nil {
-		return err
+		commandErr = err
+		return commandErr
 	}
-	return writeJSON(a.stdout, result)
+	commandErr = writeJSON(a.stdout, result)
+	return commandErr
 }
 
 func (a *App) runBotStop(args []string) error {
@@ -423,15 +654,27 @@ func (a *App) runBotStop(args []string) error {
 		return err
 	}
 
+	startedAt := time.Now().UTC()
+	params := map[string]any{
+		"platform": strings.TrimSpace(*platform),
+		"timeout":  timeout.String(),
+	}
+	var commandErr error
+	defer func() {
+		a.recordCommandAudit("bot.stop", startedAt, params, commandErr, false)
+	}()
+
 	svc := botsvc.NewService(a.cfg, a.logger)
 	result, err := svc.Stop(context.Background(), botsvc.StopOptions{
 		Platform: *platform,
 		Timeout:  *timeout,
 	})
 	if err != nil {
-		return err
+		commandErr = err
+		return commandErr
 	}
-	return writeJSON(a.stdout, result)
+	commandErr = writeJSON(a.stdout, result)
+	return commandErr
 }
 
 func (a *App) runBotRun(args []string) error {
@@ -446,15 +689,28 @@ func (a *App) runBotRun(args []string) error {
 		return err
 	}
 
+	tokenProvided := strings.TrimSpace(*token) != ""
+	startedAt := time.Now().UTC()
+	params := map[string]any{
+		"platform":       strings.TrimSpace(*platform),
+		"token_provided": tokenProvided,
+		"leaks_glob":     strings.TrimSpace(*leaksGlob),
+	}
+	var commandErr error
+	defer func() {
+		a.recordCommandAudit("bot.run", startedAt, params, commandErr, tokenProvided)
+	}()
+
 	svc := botsvc.NewService(a.cfg, a.logger)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	return svc.Run(ctx, botsvc.RunOptions{
+	commandErr = svc.Run(ctx, botsvc.RunOptions{
 		Platform:  *platform,
 		Token:     *token,
 		LeaksGlob: *leaksGlob,
 	})
+	return commandErr
 }
 
 func (a *App) printBotUsage(baseErr error) error {
@@ -481,17 +737,69 @@ func (a *App) runMapping(args []string) error {
 		return err
 	}
 
+	startedAt := time.Now().UTC()
+	params := map[string]any{
+		"json": *asJSON,
+	}
+	var commandErr error
+	defer func() {
+		a.recordCommandAudit("mapping", startedAt, params, commandErr, false)
+	}()
+
 	mappings := importer.CanonicalFieldMappings()
 	if *asJSON {
-		return writeJSON(a.stdout, mappings)
+		commandErr = writeJSON(a.stdout, mappings)
+		return commandErr
 	}
 
 	for _, mapping := range mappings {
 		if _, err := fmt.Fprintf(a.stdout, "%s: %s\n", mapping.Canonical, strings.Join(mapping.Aliases, ", ")); err != nil {
-			return err
+			commandErr = err
+			return commandErr
 		}
 	}
 	return nil
+}
+
+func (a *App) recordCommandAudit(command string, startedAt time.Time, params map[string]any, commandErr error, sensitive bool) {
+	if a.auditor == nil || !a.auditor.Enabled() {
+		return
+	}
+	duration := time.Since(startedAt).Milliseconds()
+	if duration < 0 {
+		duration = 0
+	}
+
+	event := audit.Event{
+		Command:            command,
+		Status:             "success",
+		DurationMillis:     duration,
+		SensitiveOperation: sensitive,
+		Params:             sanitizeAuditParams(params),
+	}
+	if commandErr != nil {
+		event.Status = "error"
+		event.Error = commandErr.Error()
+	}
+	if err := a.auditor.Record(event); err != nil {
+		a.logger.Warn("failed to write audit event", "command", command, "error", err)
+	}
+}
+
+func sanitizeAuditParams(params map[string]any) map[string]any {
+	if len(params) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(params))
+	for key, value := range params {
+		lowerKey := strings.ToLower(strings.TrimSpace(key))
+		if strings.Contains(lowerKey, "token") || strings.Contains(lowerKey, "secret") || strings.Contains(lowerKey, "password") {
+			out[key] = "***redacted***"
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func (a *App) printUsage(baseErr error) error {
@@ -509,6 +817,7 @@ func (a *App) printUsage(baseErr error) error {
   pwned provenance --record-id <id> [--limit N] [--reveal-sensitive] [--json]
   pwned ingest status [--ingest-id <id> | --source <name> [--all]] [--json]
   pwned ingest-status [--ingest-id <id> | --source <name> [--all]] [--json]
+  pwned storage stats [--source <name>] [--by source] [--by month] [--json]
   pwned bot start [--platform telegram] [--token <token>] [--leaks-glob <glob>]
   pwned bot status [--platform telegram]
   pwned bot stop [--platform telegram] [--timeout 10s]
@@ -517,6 +826,8 @@ func (a *App) printUsage(baseErr error) error {
   pwned help
 
 Environment:
+  PWNED_AUDIT_ENABLED
+  PWNED_AUDIT_LOG_PATH
   PWNED_S3_ENDPOINT
   PWNED_S3_ACCESS_KEY
   PWNED_S3_SECRET_KEY
@@ -673,6 +984,80 @@ func writeIngestStatusResult(w io.Writer, result ingeststatus.Result) error {
 		}
 		if _, err := fmt.Fprintf(w, "manifest_path: %s\n", item.ManifestPath); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+func writeStorageStatsResult(w io.Writer, result storagestats.Result) error {
+	if _, err := fmt.Fprintf(w, "ingests: %d\n", result.Summary.Ingests); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "files: %d\n", result.Summary.Files); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "chunks: %d\n", result.Summary.Chunks); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "records: %d\n", result.Summary.Records); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "raw_bytes: %d\n", result.Summary.RawBytes); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "normalized_bytes: %d\n", result.Summary.NormalizedBytes); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "manifest_bytes: %d\n", result.Summary.ManifestBytes); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "total_bytes: %d\n", result.Summary.TotalBytes); err != nil {
+		return err
+	}
+
+	if len(result.BySource) > 0 {
+		if _, err := fmt.Fprintln(w, "\nby_source:"); err != nil {
+			return err
+		}
+		for _, bucket := range result.BySource {
+			if _, err := fmt.Fprintf(
+				w,
+				"  key=%s ingests=%d files=%d chunks=%d records=%d raw_bytes=%d normalized_bytes=%d manifest_bytes=%d total_bytes=%d\n",
+				bucket.Key,
+				bucket.Totals.Ingests,
+				bucket.Totals.Files,
+				bucket.Totals.Chunks,
+				bucket.Totals.Records,
+				bucket.Totals.RawBytes,
+				bucket.Totals.NormalizedBytes,
+				bucket.Totals.ManifestBytes,
+				bucket.Totals.TotalBytes,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	if len(result.ByMonth) > 0 {
+		if _, err := fmt.Fprintln(w, "\nby_month:"); err != nil {
+			return err
+		}
+		for _, bucket := range result.ByMonth {
+			if _, err := fmt.Fprintf(
+				w,
+				"  key=%s ingests=%d files=%d chunks=%d records=%d raw_bytes=%d normalized_bytes=%d manifest_bytes=%d total_bytes=%d\n",
+				bucket.Key,
+				bucket.Totals.Ingests,
+				bucket.Totals.Files,
+				bucket.Totals.Chunks,
+				bucket.Totals.Records,
+				bucket.Totals.RawBytes,
+				bucket.Totals.NormalizedBytes,
+				bucket.Totals.ManifestBytes,
+				bucket.Totals.TotalBytes,
+			); err != nil {
+				return err
+			}
 		}
 	}
 

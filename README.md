@@ -18,7 +18,10 @@ CLI-first leak ingestion and search engine for personal cybersecurity research.
   - provenance lookup by `record_id`
   - export command (`json` / `csv`)
   - ingest status command
+  - storage stats command (`storage stats`) with source/month grouping
   - resumable import (`--resume-ingest-id`) with upload retry policy
+  - enforced memory budget handling from `--max-memory`
+  - append-only audit logging for command executions
   - local + remote ingestion manifest creation
 
 ## Important
@@ -122,6 +125,12 @@ Import a folder recursively:
 ./bin/pwned import --input ./dumps --source multi-source --recursive
 ```
 
+Import with a tighter memory budget:
+
+```bash
+./bin/pwned import --input ./some-dump.csv --source breach-2026 --max-memory 64MiB
+```
+
 Import CSV without header row:
 
 ```bash
@@ -148,6 +157,8 @@ Resume a failed import:
 ```bash
 ./bin/pwned import --resume-ingest-id <ingest-id>
 ```
+
+Resume note: if `--max-memory` is not explicitly passed, resume reuses the memory budget from the manifest.
 
 Index latest completed ingest:
 
@@ -191,6 +202,18 @@ Show ingest status:
 ./bin/pwned ingest status --all --json
 # alias
 ./bin/pwned ingest-status --all --json
+```
+
+Show storage stats summary:
+
+```bash
+./bin/pwned storage stats
+```
+
+Show storage stats grouped by source and month:
+
+```bash
+./bin/pwned storage stats --by source --by month --json
 ```
 
 Export query results to CSV:
@@ -237,6 +260,11 @@ Optional for bot:
 
 - `TELEGRAM_BOT_TOKEN`
 
+Optional for audit logging:
+
+- `PWNED_AUDIT_ENABLED` (default: `true`)
+- `PWNED_AUDIT_LOG_PATH` (default: `.state/audit/events.jsonl`)
+
 ## Local Directories
 
 - `.cache/`: local build caches (`go build`, `go test`, module downloads).
@@ -246,6 +274,21 @@ Default runtime paths:
 
 - `PWNED_MANIFEST_LOCAL_DIR=.state/manifests`
 - `PWNED_NORMALIZED_LOCAL_DIR=.state/normalized`
+- `PWNED_AUDIT_LOG_PATH=.state/audit/events.jsonl`
+
+## Audit Logging
+
+When audit logging is enabled, each command appends one JSON line to `PWNED_AUDIT_LOG_PATH`.
+
+Recorded fields include:
+
+- command name
+- execution status (`success` or `error`)
+- duration
+- `sensitive_operation` marker
+- normalized `params` and `params_hash`
+
+Token/secret/password parameter keys are redacted before writing events.
 
 ## CSV Without Headers
 
