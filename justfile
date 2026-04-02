@@ -33,3 +33,12 @@ infra-stop:
 
 infra-clean: infra-stop
     rm -rf qwdata
+
+bot-start: build
+    ./{{binary}} bot start --platform telegram
+
+bot-status: build
+    ./{{binary}} bot status --platform telegram
+
+bot-stop: build
+    ./{{binary}} bot stop --platform telegram

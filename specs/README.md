@@ -9,6 +9,7 @@ This folder contains the planning artifacts for rebuilding the project before an
 - `02-technical-plan.md`: Proposed technical architecture for the new CLI-first engine.
 - `03-roadmap.md`: Phased delivery plan with concrete milestones.
 - `04-decisions-log.md`: Locked decisions and future non-blocking choices.
+- `05-bot-build-and-usage.md`: Bot build/run/usage contract and transition target.
 
 ## Workflow
 

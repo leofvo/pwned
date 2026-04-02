@@ -86,6 +86,24 @@ Show CLI help:
 just run-help
 ```
 
+Start Telegram bot (uses `TELEGRAM_BOT_TOKEN` env or `--token`):
+
+```bash
+./bin/pwned bot start --platform telegram --token "<your-token>"
+```
+
+Check bot status:
+
+```bash
+./bin/pwned bot status --platform telegram
+```
+
+Stop Telegram bot:
+
+```bash
+./bin/pwned bot stop --platform telegram
+```
+
 Start local MinIO + Quickwit:
 
 ```bash
@@ -188,6 +206,16 @@ Show canonical field mapping:
 ./bin/pwned mapping --json
 ```
 
+`just` shortcuts:
+
+```bash
+just bot-start
+just bot-status
+just bot-stop
+```
+
+Legacy standalone bot notes remain in `./bot/README.md`.
+
 ## Environment
 
 Copy and adjust values from `.env.example`.
@@ -204,6 +232,10 @@ Required keys:
 - `PWNED_UPLOAD_MAX_RETRIES`
 - `PWNED_UPLOAD_RETRY_BASE_DELAY`
 - `PWNED_UPLOAD_RETRY_MAX_DELAY`
+
+Optional for bot:
+
+- `TELEGRAM_BOT_TOKEN`
 
 ## Local Directories
 

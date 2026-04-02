@@ -8,10 +8,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
+	botsvc "github.com/leofvo/pwned/internal/bot"
 	"github.com/leofvo/pwned/internal/config"
 	"github.com/leofvo/pwned/internal/exporter"
 	"github.com/leofvo/pwned/internal/importer"
@@ -61,6 +65,8 @@ func (a *App) Run(args []string) error {
 		return a.runIngestStatus(args[1:])
 	case "mapping":
 		return a.runMapping(args[1:])
+	case "bot":
+		return a.runBot(args[1:])
 	case "version":
 		_, err := fmt.Fprintf(a.stdout, "pwned %s\n", version)
 		return err
@@ -343,6 +349,130 @@ func (a *App) runIngestStatus(args []string) error {
 	return writeIngestStatusResult(a.stdout, result)
 }
 
+func (a *App) runBot(args []string) error {
+	if len(args) == 0 {
+		return a.printBotUsage(nil)
+	}
+
+	switch strings.TrimSpace(args[0]) {
+	case "start":
+		return a.runBotStart(args[1:])
+	case "status":
+		return a.runBotStatus(args[1:])
+	case "stop":
+		return a.runBotStop(args[1:])
+	case "run":
+		return a.runBotRun(args[1:])
+	default:
+		return a.printBotUsage(fmt.Errorf("unknown bot subcommand %q", args[0]))
+	}
+}
+
+func (a *App) runBotStart(args []string) error {
+	fs := flag.NewFlagSet("bot start", flag.ContinueOnError)
+	fs.SetOutput(a.stderr)
+
+	platform := fs.String("platform", "telegram", "Bot platform (currently only telegram)")
+	token := fs.String("token", "", "Platform token (fallback: TELEGRAM_BOT_TOKEN env)")
+	leaksGlob := fs.String("leaks-glob", "./leaks/*.txt", "Local leak files glob pattern")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	svc := botsvc.NewService(a.cfg, a.logger)
+	result, err := svc.Start(context.Background(), botsvc.StartOptions{
+		Platform:  *platform,
+		Token:     *token,
+		LeaksGlob: *leaksGlob,
+	})
+	if err != nil {
+		return err
+	}
+	return writeJSON(a.stdout, result)
+}
+
+func (a *App) runBotStatus(args []string) error {
+	fs := flag.NewFlagSet("bot status", flag.ContinueOnError)
+	fs.SetOutput(a.stderr)
+
+	platform := fs.String("platform", "telegram", "Bot platform (currently only telegram)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	svc := botsvc.NewService(a.cfg, a.logger)
+	result, err := svc.Status(context.Background(), botsvc.StatusOptions{
+		Platform: *platform,
+	})
+	if err != nil {
+		return err
+	}
+	return writeJSON(a.stdout, result)
+}
+
+func (a *App) runBotStop(args []string) error {
+	fs := flag.NewFlagSet("bot stop", flag.ContinueOnError)
+	fs.SetOutput(a.stderr)
+
+	platform := fs.String("platform", "telegram", "Bot platform (currently only telegram)")
+	timeout := fs.Duration("timeout", 10*time.Second, "Graceful stop timeout before force kill")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	svc := botsvc.NewService(a.cfg, a.logger)
+	result, err := svc.Stop(context.Background(), botsvc.StopOptions{
+		Platform: *platform,
+		Timeout:  *timeout,
+	})
+	if err != nil {
+		return err
+	}
+	return writeJSON(a.stdout, result)
+}
+
+func (a *App) runBotRun(args []string) error {
+	fs := flag.NewFlagSet("bot run", flag.ContinueOnError)
+	fs.SetOutput(a.stderr)
+
+	platform := fs.String("platform", "telegram", "Bot platform (currently only telegram)")
+	token := fs.String("token", "", "Platform token (fallback: TELEGRAM_BOT_TOKEN env)")
+	leaksGlob := fs.String("leaks-glob", "./leaks/*.txt", "Local leak files glob pattern")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	svc := botsvc.NewService(a.cfg, a.logger)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	return svc.Run(ctx, botsvc.RunOptions{
+		Platform:  *platform,
+		Token:     *token,
+		LeaksGlob: *leaksGlob,
+	})
+}
+
+func (a *App) printBotUsage(baseErr error) error {
+	if baseErr != nil {
+		if _, err := fmt.Fprintf(a.stderr, "%v\n\n", baseErr); err != nil {
+			return err
+		}
+	}
+
+	usage := `Usage:
+  pwned bot start [--platform telegram] [--token <token>] [--leaks-glob <glob>]
+  pwned bot status [--platform telegram]
+  pwned bot stop [--platform telegram] [--timeout 10s]
+`
+	_, err := io.WriteString(a.stdout, usage)
+	return err
+}
+
 func (a *App) runMapping(args []string) error {
 	fs := flag.NewFlagSet("mapping", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
@@ -379,6 +509,9 @@ func (a *App) printUsage(baseErr error) error {
   pwned provenance --record-id <id> [--limit N] [--reveal-sensitive] [--json]
   pwned ingest status [--ingest-id <id> | --source <name> [--all]] [--json]
   pwned ingest-status [--ingest-id <id> | --source <name> [--all]] [--json]
+  pwned bot start [--platform telegram] [--token <token>] [--leaks-glob <glob>]
+  pwned bot status [--platform telegram]
+  pwned bot stop [--platform telegram] [--timeout 10s]
   pwned mapping [--json]
   pwned version
   pwned help
